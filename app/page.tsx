@@ -38,7 +38,7 @@ export default function Home() {
   const [alertId, setAlertId] = useState<string | null>(null);
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [locationMessage, setLocationMessage] = useState("No se ha obtenido ubicación todavía.");
-  const [captchaLoaded, setCaptchaLoaded] = useState(false);
+  const [recaptchaRendered, setRecaptchaRendered] = useState(false);
   const [captchaToken, setCaptchaToken] = useState("");
   const [captchaError, setCaptchaError] = useState("");
   const [customTemplate, setCustomTemplate] = useState("Hola, soy [NOMBRE] y creo haber visto a [MASCOTA]. Mi teléfono es [TELÉFONO].");
@@ -64,8 +64,30 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !RECAPTCHA_SITE_KEY) return;
-    if (window.grecaptcha && !captchaLoaded) {
+    if (typeof window === "undefined") return;
+    if (!RECAPTCHA_SITE_KEY) {
+      setFeedback("Falta configurar NEXT_PUBLIC_RECAPTCHA_SITE_KEY en el frontend.");
+      return;
+    }
+
+    function renderRecaptcha() {
+      if (!window.grecaptcha || recaptchaRendered) return;
+      window.grecaptcha.render("recaptcha-container", {
+        sitekey: RECAPTCHA_SITE_KEY,
+        callback: (token: string) => {
+          setCaptchaToken(token);
+          setCaptchaError("");
+          setFeedback("reCAPTCHA completado. Presiona Enviar para terminar.");
+        },
+        "expired-callback": () => {
+          setCaptchaToken("");
+          setCaptchaError("El reCAPTCHA expiró, por favor complétalo nuevamente.");
+        },
+      });
+      setRecaptchaRendered(true);
+    }
+
+    if (window.grecaptcha && !recaptchaRendered) {
       renderRecaptcha();
       return;
     }
@@ -83,24 +105,7 @@ export default function Home() {
     return () => {
       document.head.removeChild(script);
     };
-
-    function renderRecaptcha() {
-      if (!window.grecaptcha || captchaLoaded) return;
-      window.grecaptcha.render("recaptcha-container", {
-        sitekey: RECAPTCHA_SITE_KEY,
-        callback: (token: string) => {
-          setCaptchaToken(token);
-          setCaptchaError("");
-          setFeedback("reCAPTCHA completado. Presiona Enviar para terminar.");
-        },
-        "expired-callback": () => {
-          setCaptchaToken("");
-          setCaptchaError("El reCAPTCHA expiró, por favor complétalo nuevamente.");
-        },
-      });
-      setCaptchaLoaded(true);
-    }
-  }, [captchaLoaded]);
+  }, [recaptchaRendered]);
 
   useEffect(() => {
     if (!navigator.geolocation) {
