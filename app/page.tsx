@@ -3,32 +3,54 @@
 import { useEffect, useMemo, useState } from "react";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3000";
+const RECAPTCHA_SITE_KEY = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || "";
 
-function encode(value: string) {
-  return encodeURIComponent(value);
+declare global {
+  interface Window {
+    grecaptcha?: any;
+    onRecaptchaLoaded?: () => void;
+  }
 }
 
-function buildMailto(ownerEmail: string, petName: string, reporterName: string, reporterPhone: string) {
-  const body = `Hola, soy ${reporterName || "un reportero"} y creo haber visto a ${petName}. Mi teléfono es ${reporterPhone || "no disponible"}. Por favor contáctame para coordinar.`;
-  return `mailto:${ownerEmail}?subject=${encode(`Aviso de ${petName} encontrado`)}&body=${encode(body)}`;
-}
+const templates = [
+  {
+    title: "Mensaje 1: Aviso rápido",
+    text: "Hola, encontré a tu mascota cerca de la ubicación informada. Mi nombre es [NOMBRE] y mi teléfono es [TELÉFONO].",
+  },
+  {
+    title: "Mensaje 2: Coordinar entrega",
+    text: "Hola, soy [NOMBRE]. Creo haber visto a tu mascota y quiero coordinar la entrega. Mi número es [TELÉFONO].",
+  },
+  {
+    title: "Mensaje 3: Ubicación exacta",
+    text: "Tu mascota está en una ubicación cercana. Contáctame al [TELÉFONO] para que pueda ayudarte a recuperarla.",
+  },
+];
 
 export default function Home() {
   const [petId, setPetId] = useState("");
   const [reporterName, setReporterName] = useState("");
   const [reporterPhone, setReporterPhone] = useState("");
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [feedback, setFeedback] = useState("Esperando para enviar la alerta automática...");
+  const [feedback, setFeedback] = useState("Completa tu nombre y teléfono para activar el envío automático.");
   const [ownerEmail, setOwnerEmail] = useState("");
   const [petName, setPetName] = useState("");
   const [alertId, setAlertId] = useState<string | null>(null);
+  const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [locationMessage, setLocationMessage] = useState("No se ha obtenido ubicación todavía.");
-  const [autoSent, setAutoSent] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [captchaLoaded, setCaptchaLoaded] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState("");
+  const [captchaError, setCaptchaError] = useState("");
+  const [customTemplate, setCustomTemplate] = useState("Hola, soy [NOMBRE] y creo haber visto a [MASCOTA]. Mi teléfono es [TELÉFONO].");
 
   const defaultMessage = useMemo(() => {
-    return `Hola, soy ${reporterName || "un reportero"} y creo que he visto a ${petName || "tu mascota"}. Mi teléfono es ${reporterPhone || "no disponible"}.`;
-  }, [reporterName, reporterPhone, petName]);
+    return customTemplate
+      .replace("[NOMBRE]", reporterName || "tu nombre")
+      .replace(/\[TELÉFONO\]/g, reporterPhone || "tu teléfono")
+      .replace(/\[MASCOTA\]/g, petName || "tu mascota");
+  }, [customTemplate, reporterName, reporterPhone, petName]);
+
+  const isReadyToSend = reporterName.trim().length > 0 && reporterPhone.trim().length > 0 && petId.trim().length > 0;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -36,191 +58,224 @@ export default function Home() {
     const id = params.get("petId") || "";
     if (id) {
       setPetId(id);
+    } else {
+      setFeedback("No se encontró identificación de mascota; usa un enlace de reporte válido.");
     }
   }, []);
 
   useEffect(() => {
-    if (!petId || autoSent) return;
+    if (typeof window === "undefined" || !RECAPTCHA_SITE_KEY) return;
+    if (window.grecaptcha && !captchaLoaded) {
+      renderRecaptcha();
+      return;
+    }
 
-    const sendAlert = async (location?: { lat: number; lng: number }) => {
-      setStatus("sending");
-      setFeedback("Enviando alerta automática al dueño...");
-
-      try {
-        const response = await fetch(`${BACKEND_URL}/api/alerts/auto`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            petId,
-            reporterName,
-            reporterPhone,
-            location,
-          }),
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          setStatus("error");
-          setFeedback(data.error || "No se pudo enviar la alerta automática.");
-          return;
-        }
-
-        setStatus("sent");
-        setFeedback("El primer correo se envió automáticamente al dueño.");
-        setOwnerEmail(data.ownerEmail || "");
-        setPetName(data.petName || "");
-        setAlertId(data.alertId || null);
-        setAutoSent(true);
-      } catch (error) {
-        setStatus("error");
-        setFeedback("Error de conexión al backend. Revisa que el servidor esté activo.");
-      }
+    window.onRecaptchaLoaded = () => {
+      renderRecaptcha();
     };
 
+    const script = document.createElement("script");
+    script.src = "https://www.google.com/recaptcha/api.js?onload=onRecaptchaLoaded&render=explicit";
+    script.async = true;
+    script.defer = true;
+    document.head.appendChild(script);
+
+    return () => {
+      document.head.removeChild(script);
+    };
+
+    function renderRecaptcha() {
+      if (!window.grecaptcha || captchaLoaded) return;
+      window.grecaptcha.render("recaptcha-container", {
+        sitekey: RECAPTCHA_SITE_KEY,
+        callback: (token: string) => {
+          setCaptchaToken(token);
+          setCaptchaError("");
+          setFeedback("reCAPTCHA completado. Presiona Enviar para terminar.");
+        },
+        "expired-callback": () => {
+          setCaptchaToken("");
+          setCaptchaError("El reCAPTCHA expiró, por favor complétalo nuevamente.");
+        },
+      });
+      setCaptchaLoaded(true);
+    }
+  }, [captchaLoaded]);
+
+  useEffect(() => {
     if (!navigator.geolocation) {
       setLocationMessage("Tu navegador no soporta geolocalización.");
-      sendAlert();
       return;
     }
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
         setLocationMessage(`Ubicación capturada: ${position.coords.latitude.toFixed(5)}, ${position.coords.longitude.toFixed(5)}`);
-        sendAlert({
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-        });
+        setLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
       },
       (error) => {
         setLocationMessage(`No se pudo obtener ubicación: ${error.message}`);
-        sendAlert();
       },
       { timeout: 10000 }
     );
-  }, [petId, autoSent, reporterName, reporterPhone]);
+  }, []);
 
-  const handleManualSend = async () => {
-    if (!petId) {
-      setFeedback("Debes ingresar el ID de la mascota para enviar la alerta.");
+  const submitAlert = async (token: string) => {
+    setStatus("sending");
+    setFeedback("Enviando correo al dueño...");
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/alerts/auto`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          petId,
+          reporterName,
+          reporterPhone,
+          location,
+          recaptchaToken: token,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setStatus("error");
+        setFeedback(data.error || "No se pudo enviar el correo.");
+        return;
+      }
+
+      setStatus("sent");
+      setFeedback("Correo enviado correctamente al dueño.");
+      setOwnerEmail(data.ownerEmail || "");
+      setPetName(data.petName || "");
+      setAlertId(data.alertId || null);
+    } catch (error) {
       setStatus("error");
+      setFeedback("Error de conexión al backend. Revisa que el servidor esté activo.");
+    }
+  };
+
+  const handleSend = async () => {
+    if (!isReadyToSend) {
+      setFeedback("Completa tu nombre, teléfono y el reCAPTCHA antes de enviar.");
       return;
     }
-    setAutoSent(false);
-    setStatus("idle");
-  };
 
-  const handleCopyMessage = async () => {
-    try {
-      await navigator.clipboard.writeText(defaultMessage);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      setCopied(false);
+    if (!captchaToken) {
+      setCaptchaError("Completa el reCAPTCHA para poder enviar.");
+      return;
     }
+
+    await submitAlert(captchaToken);
   };
 
-  const mailtoLink = ownerEmail
-    ? buildMailto(ownerEmail, petName, reporterName, reporterPhone)
-    : undefined;
+  const templateButtons = templates.map((template) => {
+    const text = template.text
+      .replace("[NOMBRE]", reporterName || "tu nombre")
+      .replace(/\[TELÉFONO\]/g, reporterPhone || "tu teléfono")
+      .replace(/\[MASCOTA\]/g, petName || "tu mascota");
+
+    return (
+      <button
+        key={template.title}
+        type="button"
+        onClick={() => setCustomTemplate(template.text)}
+        className="w-full rounded-2xl border border-slate-300 bg-white px-5 py-4 text-left text-sm font-semibold text-slate-900 transition hover:border-slate-500"
+      >
+        <div className="text-slate-800">{template.title}</div>
+        <div className="mt-2 text-slate-600 text-xs">{text}</div>
+      </button>
+    );
+  });
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 text-slate-900">
-      <div className="mx-auto max-w-4xl rounded-3xl bg-white p-8 shadow-xl shadow-slate-200">
-        <div className="mb-8 flex flex-col gap-3 rounded-3xl border border-slate-200 bg-slate-100 p-6">
-          <h1 className="text-3xl font-semibold">Alerta automática de extravío</h1>
-          <p className="text-slate-700">
-            Al abrir esta página, el sistema intentará enviar un correo automático al dueño de la mascota usando el
-            identificador `petId` y la ubicación GPS cuando esté disponible.
+      <div className="mx-auto max-w-5xl rounded-3xl bg-white p-8 shadow-xl shadow-slate-200">
+        <div className="mb-8 rounded-3xl border border-slate-200 bg-slate-100 p-6">
+          <h1 className="text-3xl font-semibold">Formulario de alerta de extravío</h1>
+          <p className="mt-3 text-slate-700">
+            Completa tu nombre y número para que el primer correo se envíe al dueño. Luego activa el reCAPTCHA y presiona Enviar.
           </p>
-          <p className="text-sm text-slate-500">Si no usas un enlace con `?petId=...`, ingresa el ID manualmente.</p>
         </div>
 
-        <div className="grid gap-6 md:grid-cols-[1.5fr_1fr]">
-          <div className="space-y-4 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-            <label className="block text-sm font-semibold text-slate-700">ID de la mascota</label>
-            <input
-              value={petId}
-              onChange={(event) => setPetId(event.target.value)}
-              className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-700"
-              placeholder="Ejemplo: 642dfb6be8f1a5e0a9c2b4d5"
-            />
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700">Nombre del reportero</label>
-                <input
-                  value={reporterName}
-                  onChange={(event) => setReporterName(event.target.value)}
-                  className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-700"
-                  placeholder="Tu nombre"
-                />
+        <div className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
+          <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="space-y-4">
+              <div className="rounded-3xl bg-slate-50 p-4 text-sm text-slate-600">
+                <p className="font-semibold text-slate-800">Atención</p>
+                <p>Este formulario no solicita el ID de la mascota. El sistema usa la identificación oculta del enlace de reporte.</p>
               </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700">Teléfono del reportero</label>
-                <input
-                  value={reporterPhone}
-                  onChange={(event) => setReporterPhone(event.target.value)}
-                  className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-700"
-                  placeholder="+34 600 123 456"
-                />
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700">Nombre del reportero</label>
+                  <input
+                    value={reporterName}
+                    onChange={(event) => setReporterName(event.target.value)}
+                    className="mt-2 w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-700"
+                    placeholder="Tu nombre completo"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700">Teléfono del reportero</label>
+                  <input
+                    value={reporterPhone}
+                    onChange={(event) => setReporterPhone(event.target.value)}
+                    className="mt-2 w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-slate-700"
+                    placeholder="Ej: +34 600 123 456"
+                  />
+                </div>
               </div>
-            </div>
 
-            <button
-              type="button"
-              onClick={handleManualSend}
-              className="inline-flex h-12 items-center justify-center rounded-2xl bg-slate-900 px-5 text-sm font-semibold text-white transition hover:bg-slate-700"
-            >
-              Reintentar alerta automática
-            </button>
+              <div className="mt-4">
+                <button
+                  type="button"
+                  disabled={!isReadyToSend}
+                  onClick={handleSend}
+                  className="inline-flex h-12 w-full items-center justify-center rounded-2xl bg-slate-900 px-5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Enviar
+                </button>
+              </div>
 
-            <div className="rounded-3xl bg-slate-50 p-4 text-sm text-slate-600">
-              <p className="font-semibold text-slate-800">Estado de la alerta</p>
-              <p>{feedback}</p>
-              <p>{locationMessage}</p>
-              {alertId && <p>ID de alerta: <span className="font-mono text-slate-900">{alertId}</span></p>}
-            </div>
-          </div>
-
-          <div className="space-y-4 rounded-3xl border border-slate-200 bg-slate-50 p-6 shadow-sm">
-            <div>
-              <p className="text-sm font-semibold text-slate-700">Botones de contacto predeterminados</p>
-              <p className="text-sm text-slate-600">Usa estas opciones después de que el correo automático ya haya sido enviado.</p>
-            </div>
-
-            <div className="space-y-3">
-              <button
-                type="button"
-                disabled={!mailtoLink}
-                onClick={() => {
-                  if (!mailtoLink) return;
-                  window.location.href = mailtoLink;
-                }}
-                className="w-full rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-400"
-              >
-                Enviar correo predeterminado al dueño
-              </button>
-              <button
-                type="button"
-                onClick={handleCopyMessage}
-                className="w-full rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
-              >
-                {copied ? "Texto copiado" : "Copiar mensaje para WhatsApp/SMS"}
-              </button>
-              <div className="rounded-3xl bg-white p-4 text-sm text-slate-700">
-                <p className="font-semibold">Mensaje sugerido</p>
-                <p>{defaultMessage}</p>
+              <div className="rounded-3xl bg-slate-50 p-4 text-sm text-slate-600">
+                <p className="font-semibold text-slate-800">Estado de la alerta</p>
+                <p>{feedback}</p>
+                {captchaError && <p className="text-red-600">{captchaError}</p>}
+                <p>{locationMessage}</p>
+                {alertId && (
+                  <p>
+                    ID de alerta: <span className="font-mono text-slate-900">{alertId}</span>
+                  </p>
+                )}
               </div>
             </div>
+          </section>
 
-            <div className="rounded-3xl bg-white p-4 text-sm text-slate-700">
-              <p className="font-semibold text-slate-800">Correo del dueño</p>
-              <p>{ownerEmail || "Se mostrará cuando el backend responda."}</p>
+          <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6 shadow-sm">
+            <div className="mb-6">
+              <h2 className="text-xl font-semibold text-slate-800">Mensajes predeterminados</h2>
+              <p className="mt-2 text-sm text-slate-600">Selecciona un mensaje para usarlo como base. El sistema enviará el correo al dueño.</p>
             </div>
-          </div>
+
+            <div className="space-y-3">{templateButtons}</div>
+
+            <div className="mt-6 rounded-3xl bg-white p-4 text-sm text-slate-700">
+              <p className="font-semibold">Mensaje seleccionado</p>
+              <p className="mt-2 whitespace-pre-line break-words text-slate-600">{defaultMessage}</p>
+            </div>
+
+            <div className="mt-6 rounded-3xl bg-white p-4 text-sm text-slate-700">
+              <div id="recaptcha-container" className="mx-auto" />
+              <p className="mt-3 text-slate-600">
+                Si no ves el reCAPTCHA, revisa que la variable de entorno NEXT_PUBLIC_RECAPTCHA_SITE_KEY esté configurada.
+              </p>
+            </div>
+          </section>
         </div>
       </div>
     </div>
