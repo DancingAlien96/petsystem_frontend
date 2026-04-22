@@ -5,14 +5,21 @@ import { useEffect, useMemo, useState } from "react";
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3000";
 const RECAPTCHA_SITE_KEY = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || "";
 
-declare global {
-  interface Window {
-    grecaptcha?: any;
-    onRecaptchaLoaded?: () => void;
-    onCaptchaSuccess?: (token: string) => void;
-    onCaptchaExpired?: () => void;
-  }
-}
+type PageInfo = {
+  slug: string;
+  ownerName: string;
+  ownerEmail: string;
+  ownerPhone?: string;
+  petName: string;
+  petType?: string;
+  petBreed?: string;
+  label?: string;
+};
+
+type AlertFormProps = {
+  slug?: string;
+  pageInfo?: PageInfo;
+};
 
 const templates = [
   {
@@ -29,24 +36,32 @@ const templates = [
   },
 ];
 
-export default function Home() {
+export default function AlertForm({ slug, pageInfo }: AlertFormProps) {
   const [reporterName, setReporterName] = useState("");
   const [reporterPhone, setReporterPhone] = useState("");
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [feedback, setFeedback] = useState("Abre el enlace y se enviará una alerta automática al dueño.");
+  const [feedback, setFeedback] = useState(
+    pageInfo
+      ? `Formulario para ${pageInfo.petName} de ${pageInfo.ownerName}. El primer correo se enviará automáticamente cuando abra la página.`
+      : "Abre el enlace y se enviará una alerta automática al dueño."
+  );
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [locationMessage, setLocationMessage] = useState("No se ha obtenido ubicación todavía.");
   const [autoAlertSent, setAutoAlertSent] = useState(false);
   const [captchaToken, setCaptchaToken] = useState("");
   const [captchaError, setCaptchaError] = useState("");
-  const [customTemplate, setCustomTemplate] = useState("Hola, soy [NOMBRE] y creo haber visto a [MASCOTA]. Mi teléfono es [TELÉFONO].");
+  const [customTemplate, setCustomTemplate] = useState(
+    "Hola, soy [NOMBRE] y creo haber visto a [MASCOTA]. Mi teléfono es [TELÉFONO]."
+  );
+
+  const pageSlug = slug ?? pageInfo?.slug;
 
   const defaultMessage = useMemo(() => {
     return customTemplate
       .replace("[NOMBRE]", reporterName || "tu nombre")
       .replace(/\[TELÉFONO\]/g, reporterPhone || "tu teléfono")
-      .replace(/\[MASCOTA\]/g, "tu mascota");
-  }, [customTemplate, reporterName, reporterPhone]);
+      .replace(/\[MASCOTA\]/g, pageInfo?.petName || "tu mascota");
+  }, [customTemplate, reporterName, reporterPhone, pageInfo]);
 
   const isReadyToSend = reporterName.trim().length > 0 && reporterPhone.trim().length > 0;
 
@@ -81,14 +96,34 @@ export default function Home() {
     };
   }, []);
 
-  const sendAutoAlert = async (locationData: { lat: number; lng: number } | null) => {
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setLocationMessage("Tu navegador no soporta geolocalización.");
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setLocationMessage(
+          `Ubicación capturada: ${position.coords.latitude.toFixed(5)}, ${position.coords.longitude.toFixed(5)}`
+        );
+        setLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
+      },
+      (error) => {
+        setLocationMessage(`No se pudo obtener ubicación: ${error.message}`);
+      },
+      { timeout: 10000 }
+    );
+  }, []);
+
+  useEffect(() => {
     if (autoAlertSent) return;
 
-    setStatus("sending");
-    setFeedback("Enviando la alerta automática al dueño...");
+    const timer = window.setTimeout(() => {
+      setStatus("sending");
+      setFeedback("Enviando la alerta automática al dueño...");
 
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/alerts/auto`, {
+      fetch(`${BACKEND_URL}/api/alerts/auto${pageSlug ? `/${pageSlug}` : ""}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -96,54 +131,36 @@ export default function Home() {
         body: JSON.stringify({
           reporterName: reporterName || "Anónimo",
           reporterPhone: reporterPhone || "No proporcionado",
-          location: locationData,
+          location,
         }),
-      });
+      })
+        .then((response) => response.json().then((data) => ({ status: response.status, body: data })))
+        .then(({ status, body }) => {
+          if (status !== 200) {
+            setStatus("error");
+            setFeedback(body.error || "No se pudo enviar la alerta automática.");
+            return;
+          }
 
-      const data = await response.json();
-      if (!response.ok) {
-        setStatus("error");
-        setFeedback(data.error || "No se pudo enviar la alerta automática.");
-        return;
-      }
+          setStatus("sent");
+          setFeedback("La alerta automática se envió al dueño.");
+          setAutoAlertSent(true);
+        })
+        .catch(() => {
+          setStatus("error");
+          setFeedback("Error de conexión al backend al enviar la alerta automática.");
+        });
+    }, 1200);
 
-      setStatus("sent");
-      setFeedback("La alerta automática se envió al dueño.");
-      setAutoAlertSent(true);
-    } catch (error) {
-      setStatus("error");
-      setFeedback("Error de conexión al backend al enviar la alerta automática.");
-    }
-  };
-
-  useEffect(() => {
-    if (!navigator.geolocation) {
-      setLocationMessage("Tu navegador no soporta geolocalización.");
-      sendAutoAlert(null);
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const coords = { lat: position.coords.latitude, lng: position.coords.longitude };
-        setLocationMessage(`Ubicación capturada: ${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`);
-        setLocation(coords);
-        sendAutoAlert(coords);
-      },
-      (error) => {
-        setLocationMessage(`No se pudo obtener ubicación: ${error.message}`);
-        sendAutoAlert(null);
-      },
-      { timeout: 10000 }
-    );
-  }, []);
+    return () => window.clearTimeout(timer);
+  }, [autoAlertSent, location, reporterName, reporterPhone, pageSlug]);
 
   const submitAlert = async (token: string) => {
     setStatus("sending");
     setFeedback("Enviando correo al dueño...");
 
     try {
-      const response = await fetch(`${BACKEND_URL}/api/alerts`, {
+      const response = await fetch(`${BACKEND_URL}/api/alerts${pageSlug ? `/${pageSlug}` : ""}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -199,7 +216,7 @@ export default function Home() {
     const text = template.text
       .replace("[NOMBRE]", reporterName || "tu nombre")
       .replace(/\[TELÉFONO\]/g, reporterPhone || "tu teléfono")
-      .replace(/\[MASCOTA\]/g, "tu mascota");
+      .replace(/\[MASCOTA\]/g, pageInfo?.petName || "tu mascota");
 
     return (
       <button
@@ -220,9 +237,21 @@ export default function Home() {
         <div className="mb-8 rounded-3xl border border-slate-200 bg-slate-100 p-6">
           <h1 className="text-3xl font-semibold">Formulario de alerta de extravío</h1>
           <p className="mt-3 text-slate-700">
-            Completa tu nombre y número para que el primer correo se envíe al dueño. Luego activa el reCAPTCHA y presiona Enviar.
+            {pageInfo
+              ? `Esta página está asociada a ${pageInfo.petName} y su dueño ${pageInfo.ownerName}.`
+              : "Completa tu nombre y número para que el primer correo se envíe al dueño. Luego activa el reCAPTCHA y presiona Enviar."}
           </p>
         </div>
+
+        {pageInfo ? (
+          <div className="mb-6 rounded-3xl border border-slate-200 bg-slate-50 p-6 text-slate-700">
+            <p className="font-semibold text-slate-800">Destino de la alerta</p>
+            <p>Medalla: {pageInfo.label || pageInfo.petName}</p>
+            <p>Dueño: {pageInfo.ownerName}</p>
+            <p>Email del dueño: {pageInfo.ownerEmail}</p>
+            {pageInfo.ownerPhone ? <p>Teléfono del dueño: {pageInfo.ownerPhone}</p> : null}
+          </div>
+        ) : null}
 
         <div className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
           <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -254,50 +283,50 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="mt-4">
+              <div className="rounded-3xl bg-slate-50 p-4 text-sm text-slate-600">
+                <p className="font-semibold text-slate-800">Plantilla de mensaje</p>
+                <textarea
+                  value={customTemplate}
+                  onChange={(event) => setCustomTemplate(event.target.value)}
+                  className="mt-2 min-h-[120px] w-full rounded-3xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-700"
+                />
+              </div>
+
+              <div className="grid gap-3">{templateButtons}</div>
+
+              <div className="rounded-3xl bg-slate-50 p-4 text-sm text-slate-600">
+                <p className="font-semibold text-slate-800">Ubicación</p>
+                <p>{locationMessage}</p>
+              </div>
+
+              <div className="space-y-3">
+                <div className="g-recaptcha" data-sitekey={RECAPTCHA_SITE_KEY}></div>
+                {captchaError ? <p className="text-sm text-red-600">{captchaError}</p> : null}
                 <button
                   type="button"
-                  disabled={!isReadyToSend}
                   onClick={handleSend}
-                  className="inline-flex h-12 w-full items-center justify-center rounded-2xl bg-slate-900 px-5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={!isReadyToSend}
+                  className="w-full rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Enviar
+                  Enviar mensaje al dueño
                 </button>
               </div>
 
               <div className="rounded-3xl bg-slate-50 p-4 text-sm text-slate-600">
-                <p className="font-semibold text-slate-800">Estado de la alerta</p>
-                <p>{feedback}</p>
-                {captchaError && <p className="text-red-600">{captchaError}</p>}
-                <p>{locationMessage}</p>
+                <p className="font-semibold text-slate-800">Estado</p>
+                <p>{status === "sending" ? "Procesando..." : feedback}</p>
               </div>
             </div>
           </section>
 
-          <section className="rounded-3xl border border-slate-200 bg-slate-50 p-6 shadow-sm">
-            <div className="mb-6">
-              <h2 className="text-xl font-semibold text-slate-800">Mensajes predeterminados</h2>
-              <p className="mt-2 text-sm text-slate-600">Selecciona un mensaje para usarlo como base. El sistema enviará el correo al dueño.</p>
+          <aside className="space-y-6">
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-slate-900">Resumen</h2>
+              <p className="mt-3 text-slate-700">
+                Completa los datos y envía el mensaje para que el dueño reciba un segundo correo con tu texto.
+              </p>
             </div>
-
-            <div className="space-y-3">{templateButtons}</div>
-
-            <div className="mt-6 rounded-3xl bg-white p-4 text-sm text-slate-700">
-              <p className="font-semibold">Mensaje seleccionado</p>
-              <p className="mt-2 whitespace-pre-line break-words text-slate-600">{defaultMessage}</p>
-            </div>
-
-            <div className="mt-6 rounded-3xl bg-white p-4 text-sm text-slate-700">
-              <div className="mx-auto">
-                <div
-                  className="g-recaptcha"
-                  data-sitekey={RECAPTCHA_SITE_KEY}
-                  data-callback="onCaptchaSuccess"
-                  data-expired-callback="onCaptchaExpired"
-                />
-              </div>
-            </div>
-          </section>
+          </aside>
         </div>
       </div>
     </div>
