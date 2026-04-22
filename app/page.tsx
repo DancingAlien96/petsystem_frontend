@@ -9,6 +9,8 @@ declare global {
   interface Window {
     grecaptcha?: any;
     onRecaptchaLoaded?: () => void;
+    onCaptchaSuccess?: (token: string) => void;
+    onCaptchaExpired?: () => void;
   }
 }
 
@@ -38,7 +40,6 @@ export default function Home() {
   const [alertId, setAlertId] = useState<string | null>(null);
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [locationMessage, setLocationMessage] = useState("No se ha obtenido ubicación todavía.");
-  const [recaptchaRendered, setRecaptchaRendered] = useState(false);
   const [captchaToken, setCaptchaToken] = useState("");
   const [captchaError, setCaptchaError] = useState("");
   const [customTemplate, setCustomTemplate] = useState("Hola, soy [NOMBRE] y creo haber visto a [MASCOTA]. Mi teléfono es [TELÉFONO].");
@@ -70,42 +71,29 @@ export default function Home() {
       return;
     }
 
-    function renderRecaptcha() {
-      if (!window.grecaptcha || recaptchaRendered) return;
-      window.grecaptcha.render("recaptcha-container", {
-        sitekey: RECAPTCHA_SITE_KEY,
-        callback: (token: string) => {
-          setCaptchaToken(token);
-          setCaptchaError("");
-          setFeedback("reCAPTCHA completado. Presiona Enviar para terminar.");
-        },
-        "expired-callback": () => {
-          setCaptchaToken("");
-          setCaptchaError("El reCAPTCHA expiró, por favor complétalo nuevamente.");
-        },
-      });
-      setRecaptchaRendered(true);
-    }
+    window.onCaptchaSuccess = (token: string) => {
+      setCaptchaToken(token);
+      setCaptchaError("");
+      setFeedback("reCAPTCHA completado. Presiona Enviar para terminar.");
+    };
 
-    if (window.grecaptcha && !recaptchaRendered) {
-      renderRecaptcha();
-      return;
-    }
-
-    window.onRecaptchaLoaded = () => {
-      renderRecaptcha();
+    window.onCaptchaExpired = () => {
+      setCaptchaToken("");
+      setCaptchaError("El reCAPTCHA expiró, por favor complétalo nuevamente.");
     };
 
     const script = document.createElement("script");
-    script.src = "https://www.google.com/recaptcha/api.js?onload=onRecaptchaLoaded&render=explicit";
+    script.src = "https://www.google.com/recaptcha/api.js";
     script.async = true;
     script.defer = true;
     document.head.appendChild(script);
 
     return () => {
       document.head.removeChild(script);
+      delete window.onCaptchaSuccess;
+      delete window.onCaptchaExpired;
     };
-  }, [recaptchaRendered]);
+  }, []);
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -169,12 +157,20 @@ export default function Home() {
       return;
     }
 
-    if (!captchaToken) {
+    let token = captchaToken;
+    if (!token && typeof window !== "undefined" && window.grecaptcha) {
+      token = window.grecaptcha.getResponse();
+      if (token) {
+        setCaptchaToken(token);
+      }
+    }
+
+    if (!token) {
       setCaptchaError("Completa el reCAPTCHA para poder enviar.");
       return;
     }
 
-    await submitAlert(captchaToken);
+    await submitAlert(token);
   };
 
   const templateButtons = templates.map((template) => {
@@ -275,10 +271,14 @@ export default function Home() {
             </div>
 
             <div className="mt-6 rounded-3xl bg-white p-4 text-sm text-slate-700">
-              <div id="recaptcha-container" className="mx-auto" />
-              <p className="mt-3 text-slate-600">
-                Si no ves el reCAPTCHA, revisa que la variable de entorno NEXT_PUBLIC_RECAPTCHA_SITE_KEY esté configurada.
-              </p>
+              <div className="mx-auto">
+                <div
+                  className="g-recaptcha"
+                  data-sitekey={RECAPTCHA_SITE_KEY}
+                  data-callback="onCaptchaSuccess"
+                  data-expired-callback="onCaptchaExpired"
+                />
+              </div>
             </div>
           </section>
         </div>
