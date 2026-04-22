@@ -40,7 +40,6 @@ export default function Home() {
   const [captchaToken, setCaptchaToken] = useState("");
   const [captchaError, setCaptchaError] = useState("");
   const [customTemplate, setCustomTemplate] = useState("Hola, soy [NOMBRE] y creo haber visto a [MASCOTA]. Mi teléfono es [TELÉFONO].");
-  const [customTemplate, setCustomTemplate] = useState("Hola, soy [NOMBRE] y creo haber visto a [MASCOTA]. Mi teléfono es [TELÉFONO].");
 
   const defaultMessage = useMemo(() => {
     return customTemplate
@@ -168,9 +167,6 @@ export default function Home() {
 
       setStatus("sent");
       setFeedback("Correo enviado correctamente al dueño.");
-      setOwnerEmail(data.ownerEmail || "");
-      setPetName(data.petName || "");
-      setAlertId(data.alertId || null);
     } catch (error) {
       setStatus("error");
       setFeedback("Error de conexión al backend. Revisa que el servidor esté activo.");
@@ -203,7 +199,7 @@ export default function Home() {
     const text = template.text
       .replace("[NOMBRE]", reporterName || "tu nombre")
       .replace(/\[TELÉFONO\]/g, reporterPhone || "tu teléfono")
-      .replace(/\[MASCOTA\]/g, petName || "tu mascota");
+      .replace(/\[MASCOTA\]/g, "tu mascota");
 
     return (
       <button
@@ -274,11 +270,6 @@ export default function Home() {
                 <p>{feedback}</p>
                 {captchaError && <p className="text-red-600">{captchaError}</p>}
                 <p>{locationMessage}</p>
-                {alertId && (
-                  <p>
-                    ID de alerta: <span className="font-mono text-slate-900">{alertId}</span>
-                  </p>
-                )}
               </div>
             </div>
           </section>
