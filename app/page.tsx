@@ -30,39 +30,26 @@ const templates = [
 ];
 
 export default function Home() {
-  const [petId, setPetId] = useState("");
   const [reporterName, setReporterName] = useState("");
   const [reporterPhone, setReporterPhone] = useState("");
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [feedback, setFeedback] = useState("Completa tu nombre y teléfono para activar el envío automático.");
-  const [ownerEmail, setOwnerEmail] = useState("");
-  const [petName, setPetName] = useState("");
-  const [alertId, setAlertId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState("Abre el enlace y se enviará una alerta automática al dueño.");
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [locationMessage, setLocationMessage] = useState("No se ha obtenido ubicación todavía.");
+  const [autoAlertSent, setAutoAlertSent] = useState(false);
   const [captchaToken, setCaptchaToken] = useState("");
   const [captchaError, setCaptchaError] = useState("");
+  const [customTemplate, setCustomTemplate] = useState("Hola, soy [NOMBRE] y creo haber visto a [MASCOTA]. Mi teléfono es [TELÉFONO].");
   const [customTemplate, setCustomTemplate] = useState("Hola, soy [NOMBRE] y creo haber visto a [MASCOTA]. Mi teléfono es [TELÉFONO].");
 
   const defaultMessage = useMemo(() => {
     return customTemplate
       .replace("[NOMBRE]", reporterName || "tu nombre")
       .replace(/\[TELÉFONO\]/g, reporterPhone || "tu teléfono")
-      .replace(/\[MASCOTA\]/g, petName || "tu mascota");
-  }, [customTemplate, reporterName, reporterPhone, petName]);
+      .replace(/\[MASCOTA\]/g, "tu mascota");
+  }, [customTemplate, reporterName, reporterPhone]);
 
-  const isReadyToSend = reporterName.trim().length > 0 && reporterPhone.trim().length > 0 && petId.trim().length > 0;
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const id = params.get("petId") || "";
-    if (id) {
-      setPetId(id);
-    } else {
-      setFeedback("No se encontró identificación de mascota; usa un enlace de reporte válido.");
-    }
-  }, []);
+  const isReadyToSend = reporterName.trim().length > 0 && reporterPhone.trim().length > 0;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -113,21 +100,60 @@ export default function Home() {
     );
   }, []);
 
-  const submitAlert = async (token: string) => {
-    setStatus("sending");
-    setFeedback("Enviando correo al dueño...");
+  useEffect(() => {
+    if (autoAlertSent) return;
 
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/alerts/auto`, {
+    const timer = window.setTimeout(() => {
+      setStatus("sending");
+      setFeedback("Enviando la alerta automática al dueño...");
+
+      fetch(`${BACKEND_URL}/api/alerts/auto`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          petId,
+          reporterName: reporterName || "Anónimo",
+          reporterPhone: reporterPhone || "No proporcionado",
+          location,
+        }),
+      })
+        .then((response) => response.json().then((data) => ({ status: response.status, body: data })))
+        .then(({ status, body }) => {
+          if (status !== 200) {
+            setStatus("error");
+            setFeedback(body.error || "No se pudo enviar la alerta automática.");
+            return;
+          }
+
+          setStatus("sent");
+          setFeedback("La alerta automática se envió al dueño.");
+          setAutoAlertSent(true);
+        })
+        .catch(() => {
+          setStatus("error");
+          setFeedback("Error de conexión al backend al enviar la alerta automática.");
+        });
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
+  }, [BACKEND_URL, autoAlertSent, location, reporterName, reporterPhone]);
+
+  const submitAlert = async (token: string) => {
+    setStatus("sending");
+    setFeedback("Enviando correo al dueño...");
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/alerts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
           reporterName,
           reporterPhone,
           location,
+          message: defaultMessage,
           recaptchaToken: token,
         }),
       });
@@ -153,7 +179,7 @@ export default function Home() {
 
   const handleSend = async () => {
     if (!isReadyToSend) {
-      setFeedback("Completa tu nombre, teléfono y el reCAPTCHA antes de enviar.");
+      setFeedback("Completa tu nombre y teléfono antes de enviar.");
       return;
     }
 
@@ -207,7 +233,7 @@ export default function Home() {
             <div className="space-y-4">
               <div className="rounded-3xl bg-slate-50 p-4 text-sm text-slate-600">
                 <p className="font-semibold text-slate-800">Atención</p>
-                <p>Este formulario no solicita el ID de la mascota. El sistema usa la identificación oculta del enlace de reporte.</p>
+                <p>Este formulario enviará una alerta automática al abrir la página y después podrás enviar un segundo mensaje.</p>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
